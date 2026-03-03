@@ -16,11 +16,13 @@ package org.pentaho.platform.plugin.kettle;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.commons.vfs2.FileObject;
 import org.pentaho.platform.api.engine.IParameterProvider;
 import org.pentaho.platform.api.engine.IPluginManager;
 import org.pentaho.platform.api.repository2.unified.IUnifiedRepository;
 import org.pentaho.platform.api.repository2.unified.RepositoryFile;
 import org.pentaho.platform.api.util.IPdiContentProvider;
+import org.pentaho.platform.engine.core.system.PentahoSessionHolder;
 import org.pentaho.platform.engine.core.system.PentahoSystem;
 import org.pentaho.platform.engine.services.solution.SimpleContentGenerator;
 import org.pentaho.util.messages.LocaleHelper;
@@ -50,35 +52,48 @@ public class ParameterContentGenerator extends SimpleContentGenerator {
     IParameterProvider pathParams = parameterProviders.get( PATH );
     IParameterProvider requestParams = parameterProviders.get( IParameterProvider.SCOPE_REQUEST );
 
-    RepositoryFile file = null;
+    Object file = null;
 
     if ( pathParams != null ) {
 
-      file = (RepositoryFile) pathParams.getParameter( FILE );
+      file = pathParams.getParameter( FILE );
 
     } else {
 
       IUnifiedRepository repo = PentahoSystem.get( IUnifiedRepository.class, null );
 
-      String path = URLDecoder.decode( requestParams.getStringParameter( PATH, StringUtils.EMPTY ), LocaleHelper.UTF_8 );
+      String path = URLDecoder.decode( requestParams.getStringParameter( PATH, StringUtils.EMPTY ),
+        LocaleHelper.UTF_8 );
       file = repo.getFile( idTopath( path ) );
     }
 
     IPdiContentProvider provider =
-        (IPdiContentProvider) PentahoSystem.get( IPluginManager.class ).getBean(
-            IPdiContentProvider.class.getSimpleName() );
+      (IPdiContentProvider) PentahoSystem.get( IPluginManager.class ).getBean(
+        IPdiContentProvider.class.getSimpleName() );
 
-    Map<String, String> userParams = provider.getUserParameters( file.getPath() );
-    Map<String, String> userVariables = provider.getVariables( file.getPath() );
+    Map<String, String> userParams = new HashMap<>();
+    Map<String, String> userVariables = new HashMap<>();
+
+    if ( null != file && file instanceof RepositoryFile repositoryFile ) {
+      userParams.putAll( provider.getUserParameters( repositoryFile.getPath() ) );
+      userVariables.putAll( provider.getVariables( repositoryFile.getPath() ) );
+    } else if ( null != file && file instanceof FileObject fileObject ) {
+      userParams.putAll( provider.getUserParameters( fileObject ) );
+      userVariables.putAll( provider.getVariables( fileObject ) );
+    } else {
+      genLogIdFromSession( PentahoSessionHolder.getSession() );
+      warn( "File is null or unexpected object type for file: " + ( file != null ? file.toString() : "null" ) );
+    }
 
     // Ultimately, user variables come from inspecting strings in the transmeta and matching on "${" and "}"
     // this means that if we have a param defined and have a reference it somewhere in the ktr, it will show up
     // as both a param and a variable -- we only want the param to show up in that case.
     Map<String, String> filteredUserVariables = userVariables.entrySet().stream()
       .filter( i -> !userParams.containsKey( i.getKey() ) )
-      .collect( Collectors.toMap( Map.Entry::getKey, Map.Entry::getValue ));
+      .collect( Collectors.toMap( Map.Entry::getKey, Map.Entry::getValue ) );
 
-    ParametersBean paramBean = new ParametersBean( userParams, filteredUserVariables, requestParameterToStringMap( requestParams ) );
+    ParametersBean paramBean = new ParametersBean( userParams, filteredUserVariables, requestParameterToStringMap(
+      requestParams ) );
     String response = paramBean.getParametersXmlString();
 
     out.write( response.getBytes( LocaleHelper.getSystemEncoding() ) );
@@ -103,15 +118,15 @@ public class ParameterContentGenerator extends SimpleContentGenerator {
     return path;
   }
 
-  private Map<String, String> requestParameterToStringMap( IParameterProvider requestParams ){
+  private Map<String, String> requestParameterToStringMap( IParameterProvider requestParams ) {
 
     Map<String, String> paramMap = new HashMap<>();
 
-    if( requestParams != null ){
+    if ( requestParams != null ) {
 
       Iterator<String> it = requestParams.getParameterNames();
 
-      while( it.hasNext() ){
+      while ( it.hasNext() ) {
 
         String name = it.next();
         String value = "";
@@ -120,7 +135,7 @@ public class ParameterContentGenerator extends SimpleContentGenerator {
           if ( paramVal instanceof String[] ) {
             // jobs scheduled through PUC appear to have all of their parameters duplicated in the data stored, which leads
             // to these request params being a list of strings instead of a single string.
-            String[] paramArray = (String[])paramVal;
+            String[] paramArray = (String[]) paramVal;
             value = paramArray.length > 0 ? paramArray[ 0 ] : "";
           } else {
             value = requestParams.getParameter( name ).toString();
